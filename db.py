@@ -33,7 +33,11 @@ def init_db():
     racers_collection.create_index([('guild_id', 1), ('owner_id', 1)])
     # Create index for race history dedupe
     race_history_collection.create_index([('guild_id', 1), ('race_signature', 1)], unique=True)
-    banned_phrase_collection.create_index([('guild_id', 1), ('phrase', 1)], unique=True)
+    try:
+      banned_phrase_collection.drop_index('guild_id_1_phrase_1')
+    except Exception:
+      pass  # Already dropped or never existed.
+    banned_phrase_collection.create_index([('guild_id', 1), ('type', 1), ('phrase', 1)], unique=True)
     init_notification_collection.create_index([('guild_id', 1), ('channel_id', 1)], unique=True)
     contributor_collection.create_index([('guild_id', 1), ('user_id', 1)], unique=True)
     # Ensure money is sourced from balances only and keep gamble schema consistent.

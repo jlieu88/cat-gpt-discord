@@ -6,10 +6,16 @@ def normalize_reserved_acronym(value):
   return "".join(char for char in value.upper() if char.isalnum())
 
 
-def validate_generated_acronym(generated_acronym, reserved_acronyms=None):
+BAN_TYPE_PHRASE = "phrase"
+BAN_TYPE_ACRO = "acro"
+
+
+def validate_generated_acronym(generated_acronym, reserved_acronyms=None, guild_id=None):
   normalized = normalize_reserved_acronym(generated_acronym)
   if reserved_acronyms and normalized in reserved_acronyms:
     raise ValueError(f"You can't create the command **{generated_acronym}** as an acronym.")
+  if guild_id is not None and is_acro_banned(guild_id, normalized):
+    raise ValueError(f"The acronym **{normalized}** is banned and can't be created.")
 
 def load_acronym_database():
   """Load all acronyms from MongoDB into memory (optional, can query directly)."""
@@ -47,7 +53,7 @@ def word_acronym(guild_id, phrase, word, author_id=None, reserved_acronyms=None)
     raise ValueError("Word must be at least 4 characters long.")
 
   generated_acronym = word[-(len(word) // 2):].upper()
-  validate_generated_acronym(generated_acronym, reserved_acronyms)
+  validate_generated_acronym(generated_acronym, reserved_acronyms, guild_id)
   existing = acronym_collection.find_one({'guild_id': guild_id, 'phrase': phrase})
   if existing:
     raise ValueError(f"This acronym has already been added: **{existing['phrase']}** → {existing['acronym']}")
@@ -72,7 +78,7 @@ def phrase_acronym(guild_id, phrase, words, author_id=None, reserved_acronyms=No
 
   if not any(c.isalpha() for c in generated_acronym):
     raise ValueError("You can't acro a phrase of only numbers.")
-  validate_generated_acronym(generated_acronym, reserved_acronyms)
+  validate_generated_acronym(generated_acronym, reserved_acronyms, guild_id)
 
   existing = acronym_collection.find_one({'guild_id': guild_id, 'phrase': phrase})
   if existing:
@@ -150,52 +156,79 @@ def unacronym_all_by_author(guild_id, author_id):
   return result.deleted_count
 
 
+def _normalize_ban_value(value, ban_type):
+  if ban_type == BAN_TYPE_ACRO:
+    return normalize_reserved_acronym(value)
+  if ban_type == BAN_TYPE_PHRASE:
+    return value.strip().lower()
+  raise ValueError("Ban type must be 'phrase' or 'acro'.")
+
+
+def _ban_query(guild_id, normalized, ban_type):
+  query = {'guild_id': str(guild_id), 'phrase': normalized}
+  if ban_type == BAN_TYPE_PHRASE:
+    # Legacy entries have no type field and are phrases.
+    query['type'] = {'$in': [BAN_TYPE_PHRASE, None]}
+  else:
+    query['type'] = ban_type
+  return query
+
+
 def is_phrase_banned(guild_id, phrase):
-  guild_id = str(guild_id)
-  normalized = phrase.strip().lower()
-  return banned_phrase_collection.find_one({'guild_id': guild_id, 'phrase': normalized}) is not None
+  normalized = _normalize_ban_value(phrase, BAN_TYPE_PHRASE)
+  return banned_phrase_collection.find_one(_ban_query(guild_id, normalized, BAN_TYPE_PHRASE)) is not None
 
 
-def ban_phrase(guild_id, phrase):
+def is_acro_banned(guild_id, acro):
+  normalized = _normalize_ban_value(acro, BAN_TYPE_ACRO)
+  return banned_phrase_collection.find_one(_ban_query(guild_id, normalized, BAN_TYPE_ACRO)) is not None
+
+
+def ban_phrase(guild_id, phrase, ban_type=BAN_TYPE_PHRASE):
   guild_id = str(guild_id)
-  normalized = phrase.strip().lower()
+  normalized = _normalize_ban_value(phrase, ban_type)
   if not normalized:
     raise ValueError("Phrase cannot be empty.")
 
-  if is_phrase_banned(guild_id, normalized):
-    raise ValueError(f"The phrase **{normalized}** is already banned.")
+  if banned_phrase_collection.find_one(_ban_query(guild_id, normalized, ban_type)) is not None:
+    raise ValueError(f"The {ban_type} **{normalized}** is already banned.")
 
-  existing_doc = acronym_collection.find_one({'guild_id': guild_id, 'phrase': normalized})
-  ban_doc = {'guild_id': guild_id, 'phrase': normalized}
-  if existing_doc and existing_doc.get('author_id') is not None:
-    ban_doc['author_id'] = existing_doc['author_id']
+  if ban_type == BAN_TYPE_ACRO:
+    existing_docs = list(acronym_collection.find({'guild_id': guild_id, 'acronym': normalized}))
+  else:
+    existing_docs = list(acronym_collection.find({'guild_id': guild_id, 'phrase': normalized}))
+
+  ban_doc = {'guild_id': guild_id, 'phrase': normalized, 'type': ban_type}
+  author_id = next((doc['author_id'] for doc in existing_docs if doc.get('author_id') is not None), None)
+  if author_id is not None:
+    ban_doc['author_id'] = author_id
 
   banned_phrase_collection.insert_one(ban_doc)
-  existing_removed = existing_doc is not None
+  existing_removed = len(existing_docs) > 0
   if existing_removed:
-    acronym_collection.delete_one({'_id': existing_doc['_id']})
+    acronym_collection.delete_many({'_id': {'$in': [doc['_id'] for doc in existing_docs]}})
   return normalized, existing_removed
 
 
-def unban_phrase(guild_id, phrase):
-  guild_id = str(guild_id)
-  normalized = phrase.strip().lower()
+def unban_phrase(guild_id, phrase, ban_type=BAN_TYPE_PHRASE):
+  normalized = _normalize_ban_value(phrase, ban_type)
   if not normalized:
     raise ValueError("Phrase cannot be empty.")
 
-  result = banned_phrase_collection.delete_one({'guild_id': guild_id, 'phrase': normalized})
+  result = banned_phrase_collection.delete_one(_ban_query(guild_id, normalized, ban_type))
   return result.deleted_count > 0
 
 
 def list_banned_phrases(guild_id):
-  """Return all (phrase, author_id) tuples banned for this guild, sorted by phrase."""
+  """Return all (phrase, author_id, type) tuples banned for this guild, sorted by type then phrase."""
   guild_id = str(guild_id)
   results = list(banned_phrase_collection.find(
     {'guild_id': guild_id},
-    {'_id': 0, 'phrase': 1, 'author_id': 1}
+    {'_id': 0, 'phrase': 1, 'author_id': 1, 'type': 1}
   ))
-  results.sort(key=lambda doc: doc.get('phrase', ''))
-  return [(doc['phrase'], doc.get('author_id')) for doc in results]
+  entries = [(doc['phrase'], doc.get('author_id'), doc.get('type') or BAN_TYPE_PHRASE) for doc in results]
+  entries.sort(key=lambda entry: (entry[2], entry[0]))
+  return entries
 
 
 def get_ban_leaderboard(guild_id):

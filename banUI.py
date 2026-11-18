@@ -19,7 +19,7 @@ def build_ban_list_embed(guild_id, page, entries):
     else:
         def _author_tag(author_id):
             return f"<@{author_id}>" if author_id else "*(unclaimed)*"
-        lines = [f"**{phrase}** — banned by {_author_tag(author_id)}" for phrase, author_id in slice_]
+        lines = [f"**{phrase}** ({ban_type}) — banned by {_author_tag(author_id)}" for phrase, author_id, ban_type in slice_]
         embed.description = "\n".join(lines)
 
     embed.set_footer(text=f"Page {page + 1}/{total_pages} • {total} banned phrase{'s' if total != 1 else ''}")

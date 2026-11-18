@@ -547,21 +547,31 @@ async def handle_unacroall_command(msg):
   return True
 
 
+def parse_ban_args(raw):
+  """Split '<text> -p|-a' into (text, ban_type); returns (None, None) if the flag is missing."""
+  text, _, flag = raw.strip().rpartition(" ")
+  ban_type = {"-p": "phrase", "-a": "acro"}.get(flag.lower())
+  text = text.strip().strip('"').strip()
+  if ban_type is None or not text:
+    return None, None
+  return text, ban_type
+
+
 async def handle_ban_command(msg):
   if not msg.content.lower().startswith("ban"):
     return False
 
-  phrase = msg.content[3:].strip()
+  phrase, ban_type = parse_ban_args(msg.content[3:])
   if not phrase:
-    await msg.reply("Usage: ban <phrase>")
+    await msg.reply('Usage: ban "<phrase>" -p or ban "<acro>" -a')
     return True
 
   try:
-    banned, existing_removed = ban_phrase(str(msg.guild.id), phrase)
+    banned, existing_removed = ban_phrase(str(msg.guild.id), phrase, ban_type)
     if existing_removed:
-      await msg.reply(f"🚫 Banned phrase: **{banned}** (existing acronym for it was removed)")
+      await msg.reply(f"🚫 Banned {ban_type}: **{banned}** (existing acronym for it was removed)")
     else:
-      await msg.reply(f"🚫 Banned phrase: **{banned}**")
+      await msg.reply(f"🚫 Banned {ban_type}: **{banned}**")
   except ValueError as e:
     await msg.reply(str(e))
   return True
@@ -571,17 +581,18 @@ async def handle_unban_command(msg):
   if not msg.content.lower().startswith("unban"):
     return False
 
-  phrase = msg.content[5:].strip()
+  phrase, ban_type = parse_ban_args(msg.content[5:])
   if not phrase:
-    await msg.reply("Usage: unban <phrase>")
+    await msg.reply('Usage: unban "<phrase>" -p or unban "<acro>" -a')
     return True
 
   try:
-    removed = unban_phrase(str(msg.guild.id), phrase)
+    removed = unban_phrase(str(msg.guild.id), phrase, ban_type)
     if removed:
-      await msg.reply(f"✅ Unbanned phrase: **{phrase.lower().strip()}**")
+      shown = phrase.strip().lower() if ban_type == "phrase" else normalize_reserved_acronym(phrase)
+      await msg.reply(f"✅ Unbanned {ban_type}: **{shown}**")
     else:
-      await msg.reply("That phrase isn't banned.")
+      await msg.reply(f"That {ban_type} isn't banned.")
   except ValueError as e:
     await msg.reply(str(e))
   return True
