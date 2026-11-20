@@ -20,7 +20,7 @@ from db import (
   get_enabled_init_notifications, upsert_contributor,
   set_fun_opt_out, is_fun_opt_out,
   set_llm_disabled, is_llm_disabled, ensure_llm_setting,
-  set_llm_model, get_llm_model,
+  set_llm_model, get_llm_model, get_last_acro,
 )
 from races.race_ui import RaceHistoryView, RacePanelView, build_race_embed, build_race_history_embed
 from races.racer_ui import RacersPanelView, build_racers_embed
@@ -424,6 +424,13 @@ async def handle_acro_command(msg, protected_phrases):
     return False
 
   acro_input = msg.content[4:].lower().strip()
+  if acro_input == "^":
+    last = get_last_acro(msg.author.id)
+    if not last or last.get("guild_id") != str(msg.guild.id):
+      await msg.reply("No last acro found for you in this server.")
+      return True
+    await perform_acro_phrase(msg, last["phrase"], protected_phrases)
+    return True
   if acro_input == "*":
     if msg.author.id != BLOUIS_ID:
       await msg.reply("Only Blouis can use `acro *`.")
@@ -482,28 +489,17 @@ async def handle_unacro_command(msg):
   acro_input = msg.content[6:].strip()
 
   if acro_input == "^":
-    bot_msg = None
-    acro = None
-    async for m in msg.channel.history(limit=20):
-      if m.author == client.user:
-        if m.content.startswith("The Big "):
-          bot_msg = m
-          acro = m.content[8:].strip()
-          break
-        if m.content.startswith("Acronym added: "):
-          bot_msg = m
-          acro = m.content[15:].strip()
-          break
-
-    if bot_msg is None:
-      await msg.reply("No `The Big <acro>` or `Acronym added: <acro>` found in the last 20 messages. Can't use `^` here.")
+    last = get_last_acro(msg.author.id)
+    if not last or last.get("guild_id") != str(msg.guild.id):
+      await msg.reply("No last acro found for you in this server.")
       return True
+    phrase = last["phrase"]
     try:
-      removed = unacronym_by_acronym(str(msg.guild.id), acro, msg.author.id, BLOUIS_ID)
+      removed = unacronym(str(msg.guild.id), phrase, msg.author.id, BLOUIS_ID)
       if removed:
-        await msg.reply(f"Acronym removed: {acro}")
+        await msg.reply(f"Acronym removed: {phrase}")
       else:
-        await msg.reply(f"No acronym found for **{acro}**.")
+        await msg.reply(f"Your last acro **{phrase}** is already removed.")
     except ValueError as e:
       await msg.reply(str(e))
     return True

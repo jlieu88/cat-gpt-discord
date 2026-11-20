@@ -1,4 +1,4 @@
-from db import acronym_collection, banned_phrase_collection
+from db import acronym_collection, banned_phrase_collection, set_last_acro
 import random
 
 
@@ -44,8 +44,12 @@ def acronym(guild_id, phrase, author_id=None, reserved_acronyms=None):
   if is_phrase_banned(guild_id, normalized):
     raise ValueError(f"The phrase **{normalized}** is banned and can't be acro'd.")
   if len(alphanumerical_words) == 1:
-    return word_acronym(guild_id, normalized, alphanumerical_words[0], author_id, reserved_acronyms)
-  return phrase_acronym(guild_id, normalized, alphanumerical_words, author_id, reserved_acronyms)
+    result = word_acronym(guild_id, normalized, alphanumerical_words[0], author_id, reserved_acronyms)
+  else:
+    result = phrase_acronym(guild_id, normalized, alphanumerical_words, author_id, reserved_acronyms)
+  if author_id is not None:
+    set_last_acro(author_id, guild_id, normalized)
+  return result
 
 
 def word_acronym(guild_id, phrase, word, author_id=None, reserved_acronyms=None):

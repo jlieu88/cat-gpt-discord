@@ -11,8 +11,8 @@ LLM_COMMANDS = [
 
 REGULAR_COMMANDS = LLM_COMMANDS + [
   "`lex <word>`: Alphabetically sorts letters in the word.",
-  "`acro <phrase>`: Creates/stores an acronym for a word or phrase.",
-  "`unacro <phrase>`: Removes a stored acronym for a word or phrase.",
+  "`acro <phrase>`: Creates/stores an acronym for a word or phrase. `acro ^` re-creates your last acro.",
+  "`unacro <phrase>`: Removes a stored acronym for a word or phrase. `unacro ^` removes your last acro.",
   "`dict .`: Lists all stored acronyms for this server.",
   "`claim <ACRO>`: Claim authorship of an acronym.",
   "`blame <ACRO>`: Show who owns an acronym.",

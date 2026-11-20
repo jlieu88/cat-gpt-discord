@@ -12,7 +12,7 @@ db = client['catgpt_db']
 # Collections
 acronym_collection = db['acronyms']
 gamble_collection = db['gamble']
-balance_collection = db['balances']
+user_collection = db['users']
 racers_collection = db['racers']
 race_history_collection = db['race_history']
 banned_phrase_collection = db['banned_phrases']
@@ -23,11 +23,14 @@ contributor_collection = db['contributors']
 def init_db():
   """Initialize database indexes for better query performance."""
   try:
+    existing_collections = db.list_collection_names()
+    if 'balances' in existing_collections and 'users' not in existing_collections:
+      db['balances'].rename('users')
     # Scope acronym uniqueness by guild and keep gamble/balance per user.
     acronym_collection.create_index([('guild_id', 1), ('phrase', 1)], unique=True)
     gamble_collection.create_index('user_id', unique=True)
     gamble_collection.create_index([('guild_ids', 1), ('user_id', 1)])
-    balance_collection.create_index('user_id', unique=True)
+    user_collection.create_index('user_id', unique=True)
     # Create indexes for persisted racers
     racers_collection.create_index([('guild_id', 1), ('racer_id', 1)], unique=True)
     racers_collection.create_index([('guild_id', 1), ('owner_id', 1)])
@@ -40,7 +43,7 @@ def init_db():
     banned_phrase_collection.create_index([('guild_id', 1), ('type', 1), ('phrase', 1)], unique=True)
     init_notification_collection.create_index([('guild_id', 1), ('channel_id', 1)], unique=True)
     contributor_collection.create_index([('guild_id', 1), ('user_id', 1)], unique=True)
-    # Ensure money is sourced from balances only and keep gamble schema consistent.
+    # Ensure money is sourced from users only and keep gamble schema consistent.
     gamble_collection.update_many({}, {'$unset': {'money': ""}})
     gamble_collection.update_many(
       {'guild_ids': {'$exists': False}},
@@ -189,7 +192,7 @@ def delete_guild_racer_records(guild_id):
 def get_user_balance(guild_id_or_user_id, user_id=None, default_balance=1):
   """Get a shared user balance used by both gamble and race systems."""
   uid = str(guild_id_or_user_id if user_id is None else user_id)
-  doc = balance_collection.find_one({'user_id': uid})
+  doc = user_collection.find_one({'user_id': uid})
   if not doc:
     return int(default_balance)
 
@@ -215,7 +218,7 @@ def set_user_balance(guild_id_or_user_id, user_id=None, amount=None):
     normalized = 1
   normalized = max(1, normalized)
 
-  balance_collection.update_one(
+  user_collection.update_one(
     {'user_id': uid},
     {'$set': {'user_id': uid, 'money': normalized}},
     upsert=True
@@ -226,7 +229,7 @@ def set_user_balance(guild_id_or_user_id, user_id=None, amount=None):
 def set_fun_opt_out(user_id, opted_out):
   """Toggle whether a user is opted out of acro/dict commands and acronym auto-responses."""
   uid = str(user_id)
-  balance_collection.update_one(
+  user_collection.update_one(
     {'user_id': uid},
     {'$set': {'user_id': uid, 'fun_opt_out': bool(opted_out)}},
     upsert=True,
@@ -235,8 +238,24 @@ def set_fun_opt_out(user_id, opted_out):
 
 def is_fun_opt_out(user_id):
   """Check whether a user has opted out of acro/dict commands and acronym auto-responses."""
-  doc = balance_collection.find_one({'user_id': str(user_id)})
+  doc = user_collection.find_one({'user_id': str(user_id)})
   return bool(doc and doc.get('fun_opt_out'))
+
+
+def set_last_acro(user_id, guild_id, phrase):
+  """Overwrite the most recent acro phrase this user created."""
+  uid = str(user_id)
+  user_collection.update_one(
+    {'user_id': uid},
+    {'$set': {'user_id': uid, 'last_acro': {'guild_id': str(guild_id), 'phrase': phrase}}},
+    upsert=True,
+  )
+
+
+def get_last_acro(user_id):
+  """Return the user's {'guild_id', 'phrase'} last acro, or None."""
+  doc = user_collection.find_one({'user_id': str(user_id)}, {'last_acro': 1})
+  return doc.get('last_acro') if doc else None
 
 
 def get_gamble_leaderboard(guild_id, limit=10):
