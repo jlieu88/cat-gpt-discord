@@ -61,10 +61,24 @@ def latex_to_unicode(tex):
     s = s.strip()
     return s if len(s) == 1 or re.fullmatch(r"\w+", s) else f"({s})"
 
+  def binds_after(m):
+    nxt = m.string[m.end():m.end() + 1]
+    return bool(nxt) and (nxt.isalnum() or nxt in "^_({√")
+
+  def frac(m):
+    # Keep the fraction grouped when something binds to it, so `\frac{2}{3}^2` reads (2/3)², not 2/3².
+    prv = m.string[m.start() - 1:m.start()]
+    s = f"{wrap(m.group(1))}/{wrap(m.group(2))}"
+    return f"({s})" if binds_after(m) or (prv and (prv.isalnum() or prv in ")}/")) else s
+
+  def sqrt(m):
+    s = f"√{wrap(m.group(1))}"
+    return f"({s})" if binds_after(m) else s
+
   for _ in range(10):  # innermost first, so nested fracs/roots/scripts unwind one level per pass
     before = tex
-    tex = _FRAC_RE.sub(lambda m: f"{wrap(m.group(1))}/{wrap(m.group(2))}", tex)
-    tex = _SQRT_RE.sub(lambda m: f"√{wrap(m.group(1))}", tex)
+    tex = _FRAC_RE.sub(frac, tex)
+    tex = _SQRT_RE.sub(sqrt, tex)
     tex = _SCRIPT_RE.sub(_script, tex)
     if tex == before:
       break

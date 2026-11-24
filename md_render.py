@@ -1,8 +1,8 @@
 """Adapts LLM markdown to what Discord can actually render.
 
 Discord handles bold/italic, `code`, fenced code, `#`-`###` headings, lists and `>` quotes natively,
-but shows tables, `####`+ headings, horizontal rules and LaTeX as raw text, treats `__x__` as underline
-instead of bold, and spawns a link preview for every URL. Replies with no markdown are left untouched.
+but shows tables, `####`+ headings, horizontal rules and LaTeX as raw text, and treats `__x__` as underline
+instead of bold. Replies with no markdown are left untouched.
 Display LaTeX is rendered to images sent between the text parts; inline LaTeX becomes Unicode where possible.
 """
 import re
@@ -31,11 +31,11 @@ _FENCE_RE = re.compile(r"^```.*?^```[ \t]*$", re.M | re.S)
 _LATEX_BLOCK_RE = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]", re.S)
 _LATEX_INLINE_RE = re.compile(r"\\\((.+?)\\\)|\$(?=\S)([^$\n]+?)(?<=\S)\$(?!\d)")
 _LATEX_HINT_RE = re.compile(r"[\\^_{}=]")
-_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]+?(?<!`)\1(?!`)")  # also ``double`` spans containing a `
 _URL = r"((?:[^()\s<>]|\([^()\s]*\))+)"  # allows one level of balanced parens, e.g. Wikipedia links
 _IMAGE_RE = re.compile(r"!\[([^\]\n]*)\]\(" + _URL + r"\)")
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(<?" + _URL + r">?\)")
-_BARE_URL_RE = re.compile(r"(?<![<\w])https?://[^\s<>]+")
+_BARE_URL_RE = re.compile(r"https?://[^\s<>]+")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$")
 _HR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
@@ -113,7 +113,9 @@ def _render(text):
   protected = []
   equations = []
 
-  def equation(tex):
+  def equation(source, tex):
+    if "\x00" in tex:  # spans a protected code snippet, so it isn't really an equation
+      return source
     equations.append(tex.strip())
     return f"\x01{len(equations) - 1}\x01"
 
@@ -124,12 +126,12 @@ def _render(text):
   text = text.replace("\r\n", "\n")
   text = _FENCE_RE.sub(lambda m: protect(m.group(0)), text)
   text = _convert_tables(text, protect)  # before equations, so math inside a table stays in its code block
-  text = _LATEX_BLOCK_RE.sub(lambda m: equation(m.group(1) or m.group(2)), text)
-  text = _INLINE_CODE_RE.sub(lambda m: protect(m.group(0)), text)
+  text = _INLINE_CODE_RE.sub(lambda m: protect(m.group(0)), text)  # before equations, so `$$x$$` stays code
+  text = _LATEX_BLOCK_RE.sub(lambda m: equation(m.group(0), m.group(1) or m.group(2)), text)
   text = _LATEX_INLINE_RE.sub(_inline_latex(protect), text)
   text = _IMAGE_RE.sub(lambda m: protect(f"[{m.group(1).strip() or 'image'}]({m.group(2)})"), text)
   text = _LINK_RE.sub(lambda m: protect(_format_link(m.group(1), m.group(2))), text)
-  text = _BARE_URL_RE.sub(lambda m: _suppress_bare_url(m.group(0)), text)
+  text = _BARE_URL_RE.sub(lambda m: protect(m.group(0)), text)  # keep `__`/`*` inside URLs from becoming formatting
   text = "\n".join(_convert_line(line) for line in text.split("\n"))
   text = _DOUBLE_UNDERSCORE_RE.sub(r"**\1**", text)
   text = re.sub(r"\n{3,}", "\n\n", text).strip()
@@ -153,17 +155,10 @@ def _inline_latex(protect):
 
 def _format_link(label, url):
   label = label.strip()
+  # Discord rejects masked links whose label is itself a URL, so show the bare URL instead.
   if label == url or re.match(r"https?://", label):
-    return f"<{url}>"
-  return f"[{label}](<{url}>)"
-
-
-def _suppress_bare_url(url):
-  trailing = ""
-  while url and (url[-1] in ".,!?;:'\"" or (url[-1] == ")" and url.count("(") < url.count(")"))):
-    trailing = url[-1] + trailing
-    url = url[:-1]
-  return f"<{url}>{trailing}"
+    return url
+  return f"[{label}]({url})"
 
 
 def _convert_line(line):
@@ -260,7 +255,8 @@ def split_message(text, limit=DISCORD_MESSAGE_LIMIT):
     current = f"{fence}\n" if fence else ""
 
   for line in text.split("\n"):
-    reserve = 4 if fence else 0  # room for a closing "\n```"
+    # Room for a closing "\n```", including when this line opens a fence, since flush() would have to close it.
+    reserve = 4 if fence or line.startswith("```") else 0
     while len(current) + len(line) + 1 + reserve > limit:
       room = limit - len(current) - reserve - 1
       if current.strip() and current.strip() != fence:

@@ -1,8 +1,6 @@
-import io
 import os
 import re
 import base64
-import asyncio
 import discord
 import random
 from discord.ext import commands
@@ -15,7 +13,7 @@ from banUI import BanListView, build_ban_list_embed
 from helpUI import HelpView, build_help_embed
 from llm import chat, summarize_text, favourite_acro_reply, MODEL_CHOICES, DEFAULT_MODEL
 from llmUI import LlmModelView
-from md_render import prepare_reply
+from llm_reply import send_reply, collect_reply_chain as _collect_reply_chain, chain_to_history as _chain_to_history
 from middleware import parse_message, FUN_OPT_OUT_REPLY, CATGPT_ALIASES
 from db import (
   init_db, close_db, get_user_balance, set_user_balance,
@@ -157,23 +155,8 @@ def resolve_stim_target_id(msg, username_arg):
 
 
 async def reply_llm(msg, text):
-  """Replies with LLM output, adapting markdown for Discord and sending display equations as images between the text.
-
-  Each follow-up message replies to the previous one so the reply chain (and CatGPT's memory) stays intact.
-  """
-  # Equation rendering is CPU-bound, so keep it off the event loop.
-  messages = await asyncio.to_thread(prepare_reply, text) or ["Mrow?"]
-  sent = msg
-  for message in messages:
-    if isinstance(message, str):
-      sent = await sent.reply(message, mention_author=sent is msg)
-    else:
-      # The alt text carries the LaTeX source, which describe_message feeds back into chat history.
-      files = [
-        discord.File(io.BytesIO(eq.png), filename=f"equation{i}.png", description=f"$${eq.tex}$$"[:1024])
-        for i, eq in enumerate(message)
-      ]
-      sent = await sent.reply(files=files, mention_author=sent is msg)
+  can_attach = msg.guild is None or msg.channel.permissions_for(msg.guild.me).attach_files
+  await send_reply(msg, text, can_attach)
 
 
 async def summarize_recent_messages(msg, count):
@@ -268,7 +251,7 @@ async def get_pdfs(message):
   return pdfs
 
 
-MAX_REPLY_CHAIN = 5
+MAX_REPLY_CHAIN = 5  # turns; a multipart CatGPT answer counts as one
 
 
 async def resolve_reference(message):
@@ -300,29 +283,12 @@ def describe_message(message):
 
 
 async def collect_reply_chain(parent):
-  """Walks up the reply chain from `parent`, returning up to MAX_REPLY_CHAIN messages, oldest first."""
-  chain = []
-  seen = set()
-  current = parent
-  while current is not None and current.id not in seen and len(chain) < MAX_REPLY_CHAIN:
-    seen.add(current.id)
-    chain.append(current)
-    current = await resolve_reference(current)
-  chain.reverse()
-  return chain
+  """Walks up the reply chain from `parent`, returning up to MAX_REPLY_CHAIN turns, oldest first."""
+  return await _collect_reply_chain(parent, client.user.id, resolve_reference, MAX_REPLY_CHAIN)
 
 
 def chain_to_history(chain):
-  history = []
-  for m in chain:
-    text = describe_message(m)
-    if not text:
-      continue
-    if m.author.id == client.user.id:
-      history.append({"role": "assistant", "content": text})
-    else:
-      history.append({"role": "user", "content": f"{m.author.display_name}: {text}"})
-  return history
+  return _chain_to_history(chain, client.user.id, describe_message)
 
 
 async def handle_catgpt_chat_command(msg, content_lower):
