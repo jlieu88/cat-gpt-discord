@@ -42,15 +42,21 @@ class RenderTests(unittest.TestCase):
     )
     self.assertEqual(render_for_discord(text), expected)
 
-  def test_links_do_not_spawn_previews(self):
-    self.assertEqual(render_for_discord("- [Cats](https://a.com/x)"), "- [Cats](<https://a.com/x>)")
-    self.assertEqual(render_for_discord("- [https://a.com](https://a.com)"), "- <https://a.com>")
-    self.assertEqual(render_for_discord("- see https://a.com/x."), "- see <https://a.com/x>.")
-    self.assertEqual(render_for_discord("- (https://a.com)"), "- (<https://a.com>)")
+  def test_links(self):
+    # Previews are suppressed at send time (suppress_embeds), so links pass through.
+    self.assertEqual(render_for_discord("- [Cats](https://a.com/x)"), "- [Cats](https://a.com/x)")
+    self.assertEqual(render_for_discord("- [Cats](<https://a.com/x>)"), "- [Cats](https://a.com/x)")
+    self.assertEqual(render_for_discord("- [https://a.com](https://a.com)"), "- https://a.com")
+    self.assertEqual(render_for_discord("- see https://a.com/__x__/y."), "- see https://a.com/__x__/y.")
 
   def test_links_with_parens(self):
     url = "https://en.wikipedia.org/wiki/Cat_(animal)"
-    self.assertEqual(render_for_discord(f"**[Cat]({url})**"), f"**[Cat](<{url}>)**")
+    self.assertEqual(render_for_discord(f"**[Cat]({url})**"), f"**[Cat]({url})**")
+
+  def test_code_spans_keep_display_math(self):
+    for text in ["- try `$$x^2$$` here", "- try ``a ` $$x^2$$`` here"]:
+      self.assertEqual(render_for_discord(text), text)
+      self.assertEqual(render_parts(text), [text])
 
   def test_code_is_left_alone(self):
     text = "**Code:**\n```py\n#### not a heading\n__init__ | x\n---\n```\nand `__x__ https://a.com`"
@@ -81,6 +87,11 @@ class LatexUnicodeTests(unittest.TestCase):
       "\\text{area} = \\pi r^2": "area = π r²",
       "\\left( x \\right)\\,\\cdot y": "( x ) · y",
       "\\sin \\theta": "sin θ",
+      "\\frac{2}{3}^2": "(2/3)²",
+      "\\frac{1}{2}x": "(1/2)x",
+      "x\\frac{1}{2}": "x(1/2)",
+      "y = \\frac{1}{2} x": "y = 1/2 x",
+      "\\sqrt{x}^2": "(√x)²",
     }
     for tex, expected in cases.items():
       self.assertEqual(latex_to_unicode(tex), expected, tex)
@@ -152,6 +163,14 @@ class SplitTests(unittest.TestCase):
     self.assertTrue(all(len(c) <= 60 for c in chunks))
     for chunk in chunks:
       self.assertEqual(chunk.count("```") % 2, 0, chunk)
+
+  def test_fences_fit_at_the_limit(self):
+    for n in range(1985, 2001):
+      for text in ["a" * n + "\n```py\nx = 1\n```", "a" * n + "\n```py\n" + "y" * 1990 + "\n```\nz"]:
+        chunks = split_message(text)
+        self.assertTrue(all(len(c) <= 2000 for c in chunks), (n, [len(c) for c in chunks]))
+        for chunk in chunks:
+          self.assertEqual(chunk.count("```") % 2, 0, n)
 
   def test_hard_splits_long_lines(self):
     chunks = split_message("a" * 250, limit=100)
