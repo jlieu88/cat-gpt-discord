@@ -13,7 +13,7 @@ from banUI import BanListView, build_ban_list_embed
 from helpUI import HelpView, build_help_embed
 from llm import chat, summarize_text, favourite_acro_reply, MODEL_CHOICES, DEFAULT_MODEL
 from llmUI import LlmModelView
-from middleware import parse_message, FUN_OPT_OUT_REPLY
+from middleware import parse_message, FUN_OPT_OUT_REPLY, CATGPT_ALIASES
 from db import (
   init_db, close_db, get_user_balance, set_user_balance,
   set_init_notification, get_init_notification,
@@ -114,7 +114,7 @@ protected_acro_phrases = {
     "i_hate_fun",
     "i_love_fun"
 }
-reserved_acro_commands = protected_acro_phrases | {"catgpt summarize", "race history"}
+reserved_acro_commands = protected_acro_phrases | CATGPT_ALIASES | {f"{alias} summarize" for alias in CATGPT_ALIASES} | {"race history"}
 reserved_acronyms = {normalize_reserved_acronym(command) for command in reserved_acro_commands}
 
 def alphabetize(word):
@@ -187,7 +187,7 @@ async def handle_summary_command(msg, content_lower):
   parts = content_lower.split()
   is_catsum_count = len(parts) == 2 and parts[0] == "catsum" and parts[1].isdigit()
 
-  if content_lower not in {"catgpt summarize", "catsum"} and not is_catsum_count:
+  if content_lower not in {f"{alias} summarize" for alias in CATGPT_ALIASES} | {"catsum"} and not is_catsum_count:
     return False
 
   if is_catsum_count:
@@ -299,7 +299,8 @@ def chain_to_history(chain):
 
 
 async def handle_catgpt_chat_command(msg, content_lower):
-  if not content_lower.startswith("catgpt ") or content_lower.startswith("catgpt summarize"):
+  parts = content_lower.split(maxsplit=1)
+  if len(parts) < 2 or parts[0] not in CATGPT_ALIASES or parts[1].startswith("summarize"):
     return False
   await respond_with_chat(msg, await resolve_reference(msg))
   return True

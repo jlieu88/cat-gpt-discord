@@ -7,7 +7,8 @@ from db import is_fun_opt_out, is_llm_disabled
 FUN_COMMANDS = {"acro", "dict"}
 FUN_OPT_OUT_REPLY = "You've opted out of acro/dict. Use `i_love_fun` to opt back in."
 
-LLM_COMMANDS = {"catgpt", "catsum"}
+CATGPT_ALIASES = {"catgpt", "catbbb", "catgbb", "catppt", "catppp", "catptt", "catggt"}
+LLM_COMMANDS = CATGPT_ALIASES | {"catsum"}
 
 GUILD_ONLY_COMMANDS = {
   "acro", "dict", "unacro", "unacroall", "ban", "unban", "ban_list", "notif",
