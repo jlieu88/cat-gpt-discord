@@ -1,9 +1,5 @@
-"""LaTeX for Discord: display equations become PNGs (matplotlib mathtext), inline ones become Unicode text."""
-import io
+"""Best-effort Unicode for inline LaTeX in Discord text replies."""
 import re
-import threading
-
-_render_lock = threading.Lock()  # matplotlib's rcParams are global, so renders are serialized
 
 _SYMBOLS = {
   "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "varepsilon": "ε", "zeta": "ζ",
@@ -95,28 +91,3 @@ def _script(m):
   if body and all(c in table for c in body):
     return "".join(table[c] for c in body)
   return "\x00"  # unconvertible (nested script, Greek subscript, ...) poisons the result
-
-
-def render_latex_png(tex):
-  """Renders a display equation to PNG bytes, or None if matplotlib is missing or can't parse it."""
-  tex = clean_tex(tex)
-  # mathtext has no environments or line breaks (matrices, align, cases, ...).
-  if not tex or "\\begin" in tex or "\\\\" in tex:
-    return None
-  try:
-    import matplotlib
-    from matplotlib.figure import Figure
-  except ImportError:
-    return None
-
-  try:
-    with _render_lock, matplotlib.rc_context({"mathtext.fontset": "cm"}):
-      fig = Figure()
-      fig.text(0, 0, f"${tex}$", fontsize=20, color="black")
-      buf = io.BytesIO()
-      # Opaque white background so the equation is readable on both light and dark Discord themes.
-      fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", pad_inches=0.12, facecolor="white")
-      return buf.getvalue()
-  except Exception as e:
-    print(f"LaTeX render failed for {tex!r}: {e}")
-    return None

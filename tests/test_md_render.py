@@ -1,7 +1,8 @@
 import unittest
 
-from latex import latex_to_unicode, render_latex_png
-from md_render import Equation, has_markdown, prepare_reply, render_for_discord, render_parts, split_message
+from latex import latex_to_unicode
+from md_render import Equation, equation_parts, has_markdown, proof_markup, render_for_discord, split_message
+from proof_render import render_proof_png
 
 
 class HasMarkdownTests(unittest.TestCase):
@@ -56,7 +57,7 @@ class RenderTests(unittest.TestCase):
   def test_code_spans_keep_display_math(self):
     for text in ["- try `$$x^2$$` here", "- try ``a ` $$x^2$$`` here"]:
       self.assertEqual(render_for_discord(text), text)
-      self.assertEqual(render_parts(text), [text])
+      self.assertIsNone(proof_markup(text))
 
   def test_code_is_left_alone(self):
     text = "**Code:**\n```py\n#### not a heading\n__init__ | x\n---\n```\nand `__x__ https://a.com`"
@@ -66,7 +67,7 @@ class RenderTests(unittest.TestCase):
     self.assertEqual(render_for_discord("- __big__ cat"), "- **big** cat")
 
   def test_latex_becomes_code(self):
-    self.assertEqual(render_for_discord("Area: $$\\pi r^2$$"), "Area: ```\n\\pi r^2\n```")
+    self.assertEqual(render_for_discord("Area: $$\\pi r^2$$"), "Area:\n```\n\\pi r^2\n```")
     self.assertEqual(render_for_discord("**E** is \\(mc^2\\)"), "**E** is mc²")
     self.assertEqual(render_for_discord("**x** $a^2$ costs $5 or $10"), "**x** a² costs $5 or $10")
     self.assertEqual(render_for_discord("Mrow $e^{-x^2}$"), "Mrow `e^{-x^2}`")  # nested superscript: no Unicode form
@@ -102,49 +103,34 @@ class LatexUnicodeTests(unittest.TestCase):
 
 
 class EquationPartsTests(unittest.TestCase):
-  def test_plain_text_is_one_part(self):
-    self.assertEqual(render_parts("meow"), ["meow"])
+  def test_plain_and_inline_only_replies_remain_text(self):
+    for text in ["meow", "Let \\(x^2\\) be a square."]:
+      self.assertIsNone(proof_markup(text))
 
-  def test_display_math_splits_text(self):
+  def test_proof_preserves_prose_and_both_kinds_of_math_in_order(self):
+    markup, equations = proof_markup(r"**Area:** for $r$ use $$\pi r^2$$ or \[xy\] as needed.")
     self.assertEqual(
-      render_parts("**Area:** $$\\pi r^2$$ meow \\[x\\] end"),
-      ["**Area:**", Equation("\\pi r^2"), "meow", Equation("x"), "end"],
+      list(equation_parts(markup, equations)),
+      ["**Area:** for ", Equation("r", False), " use ", Equation(r"\pi r^2", True),
+       " or ", Equation("xy", True), " as needed."],
     )
 
-  def test_math_in_code_or_tables_is_not_split_out(self):
+  def test_math_in_code_or_tables_does_not_trigger_proof_rendering(self):
     text = "| a | b |\n|---|---|\n| $$x$$ | 1 |\n\n```\n$$y$$\n```"
-    self.assertTrue(all(isinstance(p, str) for p in render_parts(text)))
-
-  def test_prepare_reply_groups_images_and_falls_back(self):
-    fake = lambda tex: None if tex == "bad" else tex.encode()
-    messages = prepare_reply("# Hi\n$$a$$\n$$b$$\nmid $$bad$$ end\n$$c$$", render_equation=fake)
-    self.assertEqual(messages, [
-      "# Hi",
-      [Equation("a", b"a"), Equation("b", b"b")],
-      "mid\n```\nbad\n```\nend",
-      [Equation("c", b"c")],
-    ])
-
-  def test_prepare_reply_plain_text(self):
-    self.assertEqual(prepare_reply("meow", render_equation=lambda tex: b"x"), ["meow"])
+    self.assertIsNone(proof_markup(text))
 
 
-try:
-  import matplotlib  # noqa: F401
-  HAVE_MATPLOTLIB = True
-except ImportError:
-  HAVE_MATPLOTLIB = False
-
-
-@unittest.skipUnless(HAVE_MATPLOTLIB, "matplotlib not installed")
-class LatexImageTests(unittest.TestCase):
-  def test_renders_png(self):
-    png = render_latex_png("\\displaystyle \\int_0^\\infty e^{-x^2}\\,dx = \\dfrac{\\sqrt{\\pi}}{2}")
-    self.assertTrue(png.startswith(b"\x89PNG"))
+class ProofImageTests(unittest.TestCase):
+  def test_renders_aligned_steps_and_matrices_on_the_same_page(self):
+    text = (
+      r"**Proof.** Take \(A=I\). "
+      "\n" r"\begin{align*}A^2 &= I^2 \\ &= I\end{align*}" "\n"
+      r"where \[I = \begin{pmatrix}1 & 0 \\ 0 & 1\end{pmatrix}.\]"
+    )
+    self.assertTrue(render_proof_png(text).startswith(b"\x89PNG"))
 
   def test_unsupported_returns_none(self):
-    self.assertIsNone(render_latex_png("\\begin{pmatrix}1 & 2\\end{pmatrix}"))
-    self.assertIsNone(render_latex_png("\\frac{"))
+    self.assertIsNone(render_proof_png(r"$$\madeupcommand{x}$$"))
 
 
 class SplitTests(unittest.TestCase):

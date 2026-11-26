@@ -1,48 +1,43 @@
 """Sending CatGPT's answers to Discord and reading them back as chat history.
 
-One answer can span several Discord messages (text, equation images, overflow chunks), each replying to the
-previous one. Bot messages only ever reply to other bot messages within the same answer, which is how the
-history side regroups them into a single turn.
+Long text answers and older math replies can span several Discord messages, each replying to the previous
+one. The history side regroups them into a single turn.
 """
 import asyncio
 import io
 
 import discord
 
-from latex import render_latex_png
-from md_render import prepare_reply, split_message
-
-
-def _no_images(tex):
-  return None
+from md_render import render_for_discord, split_message
+from proof_render import PROOF_FILENAME, needs_proof_source, proof_alt_text, read_proof_source, render_proof_png
 
 
 async def send_reply(msg, text, can_attach=True):
-  """Replies to `msg` with LLM output: markdown adapted for Discord, display equations as images between the text."""
-  # Equation rendering is CPU-bound, so keep it off the event loop.
-  messages = await asyncio.to_thread(prepare_reply, text, render_latex_png if can_attach else _no_images)
-  sent = msg
-
-  async def reply(**kwargs):
-    nonlocal sent
-    sent = await sent.reply(mention_author=sent is msg, **kwargs)
-
-  for message in messages or ["Mrow?"]:
-    if isinstance(message, list) and can_attach:
+  """Reply with one proof image when possible, or with Discord Markdown."""
+  if can_attach:
+    png = await asyncio.to_thread(render_proof_png, text)
+    if png:
       try:
-        # The alt text carries the LaTeX source, which the history side feeds back to the LLM.
-        await reply(files=[
-          discord.File(io.BytesIO(eq.png), filename=f"equation{i}.png", description=f"$${eq.tex}$$"[:1024])
-          for i, eq in enumerate(message)
-        ])
-        continue
-      except discord.Forbidden:
-        # The channel allows messages but not attachments: show the source and keep sending the rest.
-        can_attach = False
-    if isinstance(message, list):
-      message = "\n".join(f"```\n{eq.tex}\n```" for eq in message)
-    for chunk in split_message(message):
-      await reply(content=chunk, suppress_embeds=True)
+        file = discord.File(io.BytesIO(png), filename=PROOF_FILENAME, description=proof_alt_text(text))
+        await msg.reply(files=[file], mention_author=True)
+        return
+      except discord.HTTPException as exc:
+        if exc.status not in (403, 413) and exc.code != 40005:
+          raise
+
+  sent = msg
+  for chunk in split_message(render_for_discord(text or "") or "Mrow?"):
+    sent = await sent.reply(mention_author=sent is msg, content=chunk, suppress_embeds=True)
+
+
+async def _full_proof_text(message):
+  for attachment in message.attachments:
+    if attachment.filename == PROOF_FILENAME and needs_proof_source(attachment.description):
+      try:
+        png = await attachment.read()
+        return await asyncio.to_thread(read_proof_source, png)
+      except (discord.HTTPException, OSError, ValueError):
+        return None
 
 
 async def collect_reply_chain(parent, bot_id, resolve, max_turns, max_messages=30):
@@ -70,13 +65,13 @@ async def collect_reply_chain(parent, bot_id, resolve, max_turns, max_messages=3
   return chain
 
 
-def chain_to_history(chain, bot_id, describe):
+async def chain_to_history(chain, bot_id, describe):
   """Converts a reply chain into chat history, merging the fragments of each bot answer into one assistant turn."""
   history = []
   prev_is_bot = False
   for m in chain:
     is_bot = m.author.id == bot_id
-    text = describe(m)
+    text = (await _full_proof_text(m) if is_bot else None) or describe(m)
     if text:
       if is_bot and prev_is_bot and history and history[-1]["role"] == "assistant":
         history[-1]["content"] += f"\n{text}"

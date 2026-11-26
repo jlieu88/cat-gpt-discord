@@ -272,7 +272,7 @@ def describe_message(message):
   if content:
     return content
   if get_image_urls(message):
-    # CatGPT's equation images carry their LaTeX source as alt text.
+    # CatGPT's proof and equation images carry their source as alt text.
     alt_texts = [a.description for a in message.attachments if a.description]
     if message.author.id == client.user.id and alt_texts:
       return "\n".join(alt_texts)
@@ -285,10 +285,6 @@ def describe_message(message):
 async def collect_reply_chain(parent):
   """Walks up the reply chain from `parent`, returning up to MAX_REPLY_CHAIN turns, oldest first."""
   return await _collect_reply_chain(parent, client.user.id, resolve_reference, MAX_REPLY_CHAIN)
-
-
-def chain_to_history(chain):
-  return _chain_to_history(chain, client.user.id, describe_message)
 
 
 async def handle_catgpt_chat_command(msg, content_lower):
@@ -317,7 +313,7 @@ async def respond_with_chat(msg, parent):
   pdfs = await get_pdfs(msg)
   history = []
   if parent is not None:
-    history = chain_to_history(await collect_reply_chain(parent))
+    history = await _chain_to_history(await collect_reply_chain(parent), client.user.id, describe_message)
     image_urls += get_image_urls(parent)
     pdfs += (await get_pdfs(parent))[:max(0, MAX_PDFS - len(pdfs))]
 

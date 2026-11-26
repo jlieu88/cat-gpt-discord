@@ -3,16 +3,21 @@
 Discord handles bold/italic, `code`, fenced code, `#`-`###` headings, lists and `>` quotes natively,
 but shows tables, `####`+ headings, horizontal rules and LaTeX as raw text, and treats `__x__` as underline
 instead of bold. Replies with no markdown are left untouched.
-Display LaTeX is rendered to images sent between the text parts; inline LaTeX becomes Unicode where possible.
+The text fallback shows display LaTeX in code blocks and converts inline LaTeX to Unicode where possible.
 """
 import re
 import unicodedata
 from dataclasses import dataclass
 
-from latex import latex_to_unicode, render_latex_png
+from latex import latex_to_unicode
 
 DISCORD_MESSAGE_LIMIT = 2000
 
+_LATEX_BLOCK_RE = re.compile(
+  r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|"
+  r"\\begin\{(?P<env>(?:align(?:ed)?|gather(?:ed)?|multline|equation)\*?)\}.*?\\end\{(?P=env)\}",
+  re.S,
+)
 _MARKDOWN_PATTERNS = [
   re.compile(r"^#{1,6}\s+\S", re.M),                     # heading
   re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S", re.M),       # list item
@@ -22,13 +27,11 @@ _MARKDOWN_PATTERNS = [
   re.compile(r"!?\[[^\]\n]+\]\([^)\s]+\)"),              # link/image
   re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$", re.M),  # table separator row
   re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$", re.M),     # horizontal rule
-  re.compile(r"\$\$|\\\(|\\\["),                         # LaTeX
+  _LATEX_BLOCK_RE,
+  re.compile(r"\$\$|\\\(|\\\["),                         # LaTeX delimiters
   re.compile(r"\$(?=\S)[^$\n]*[\\^_{}=][^$\n]*?(?<=\S)\$(?!\d)"),  # inline LaTeX
 ]
-MAX_ATTACHMENTS = 10
-
 _FENCE_RE = re.compile(r"^```.*?^```[ \t]*$", re.M | re.S)
-_LATEX_BLOCK_RE = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]", re.S)
 _LATEX_INLINE_RE = re.compile(r"\\\((.+?)\\\)|\$(?=\S)([^$\n]+?)(?<=\S)\$(?!\d)")
 _LATEX_HINT_RE = re.compile(r"[\\^_{}=]")
 _INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]+?(?<!`)\1(?!`)")  # also ``double`` spans containing a `
@@ -49,7 +52,7 @@ _MARKDOWN_CHAR_RE = re.compile(r"([*_~|`\\])")
 @dataclass(frozen=True)
 class Equation:
   tex: str
-  png: bytes = b""
+  display: bool
 
 
 def has_markdown(text):
@@ -59,53 +62,34 @@ def has_markdown(text):
 def render_for_discord(text):
   """Returns `text` unchanged if it has no markdown, else rewritten into Discord-renderable markdown (equations as code blocks)."""
   text, equations = _render(text)
-  return _EQUATION_RE.sub(lambda m: _code_block(equations[int(m.group(1))]), text)
+  if not equations:
+    return text
+  return "\n".join(
+    f"```\n{part.tex}\n```" if isinstance(part, Equation) else part.strip()
+    for part in equation_parts(text, equations)
+    if isinstance(part, Equation) or part.strip()
+  )
 
 
-def render_parts(text):
-  """Like render_for_discord, but display equations are split out: returns [str | Equation] in reading order."""
-  text, equations = _render(text)
-  parts = []
+def proof_markup(text):
+  """Returns the proof Markdown with math placeholders, or None for a reply without display math."""
+  if not _LATEX_BLOCK_RE.search(text):
+    return None
+  markup, equations = _render(text, keep_inline_math=True)
+  if any(eq.display for eq in equations):
+    return markup, equations
+
+
+def equation_parts(text, equations):
+  """Yields text spans and equations in their original reading order."""
   for i, chunk in enumerate(_EQUATION_RE.split(text)):
     if i % 2:
-      parts.append(Equation(equations[int(chunk)]))
-    elif chunk.strip():
-      parts.append(chunk.strip())
-  return parts
+      yield equations[int(chunk)]
+    elif chunk:
+      yield chunk
 
 
-def prepare_reply(text, render_equation=render_latex_png):
-  """Returns the Discord messages to send, in order: a str for text, or a list of rendered Equations for images.
-
-  Equations that fail to render fall back to code blocks inside the surrounding text.
-  """
-  messages = []
-  pending = []
-
-  def flush_text():
-    if pending:
-      messages.extend(split_message("\n".join(pending)))
-      pending.clear()
-
-  for part in render_parts(text):
-    png = render_equation(part.tex) if isinstance(part, Equation) else None
-    if isinstance(part, str) or not png:
-      pending.append(part if isinstance(part, str) else _code_block(part.tex))
-      continue
-    flush_text()
-    if messages and isinstance(messages[-1], list) and len(messages[-1]) < MAX_ATTACHMENTS:
-      messages[-1].append(Equation(part.tex, png))
-    else:
-      messages.append([Equation(part.tex, png)])
-  flush_text()
-  return messages
-
-
-def _code_block(tex):
-  return f"```\n{tex}\n```"
-
-
-def _render(text):
+def _render(text, keep_inline_math=False):
   """Returns (rewritten text, equations); display equations are left as \\x01<index>\\x01 tokens."""
   if not has_markdown(text):
     return text, []
@@ -113,22 +97,22 @@ def _render(text):
   protected = []
   equations = []
 
-  def equation(source, tex):
+  def equation(source, tex, display=True):
     if "\x00" in tex:  # spans a protected code snippet, so it isn't really an equation
       return source
-    equations.append(tex.strip())
+    equations.append(Equation(tex.strip(), display))
     return f"\x01{len(equations) - 1}\x01"
 
   def protect(snippet):
     protected.append(snippet)
     return f"\x00{len(protected) - 1}\x00"
 
-  text = text.replace("\r\n", "\n")
+  text = text.replace("\r\n", "\n").replace("\x00", "\uFFFD").replace("\x01", "\uFFFD")
   text = _FENCE_RE.sub(lambda m: protect(m.group(0)), text)
   text = _convert_tables(text, protect)  # before equations, so math inside a table stays in its code block
   text = _INLINE_CODE_RE.sub(lambda m: protect(m.group(0)), text)  # before equations, so `$$x$$` stays code
-  text = _LATEX_BLOCK_RE.sub(lambda m: equation(m.group(0), m.group(1) or m.group(2)), text)
-  text = _LATEX_INLINE_RE.sub(_inline_latex(protect), text)
+  text = _LATEX_BLOCK_RE.sub(lambda m: equation(m.group(0), m.group(1) or m.group(2) or m.group(0)), text)
+  text = _LATEX_INLINE_RE.sub(_inline_latex(protect, equation if keep_inline_math else None), text)
   text = _IMAGE_RE.sub(lambda m: protect(f"[{m.group(1).strip() or 'image'}]({m.group(2)})"), text)
   text = _LINK_RE.sub(lambda m: protect(_format_link(m.group(1), m.group(2))), text)
   text = _BARE_URL_RE.sub(lambda m: protect(m.group(0)), text)  # keep `__`/`*` inside URLs from becoming formatting
@@ -142,12 +126,15 @@ def _render(text):
   return text, equations
 
 
-def _inline_latex(protect):
+def _inline_latex(protect, equation):
   def replace(m):
     tex = m.group(1) if m.group(1) is not None else m.group(2)
     # Bare `$...$` only counts as LaTeX if it looks like math, so prices like "$5 or $10" survive.
     if m.group(1) is None and not _LATEX_HINT_RE.search(tex):
-      return m.group(0)
+      if equation is None or len(tex.split()) != 1:
+        return m.group(0)
+    if equation is not None:
+      return equation(m.group(0), tex, display=False)
     plain = latex_to_unicode(tex)
     return protect(_MARKDOWN_CHAR_RE.sub(r"\\\1", plain) if plain else f"`{tex.strip()}`")
   return replace

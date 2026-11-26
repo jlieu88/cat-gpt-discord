@@ -8,4 +8,7 @@ python-dotenv
 pymongo
 certifi
 numpy
-matplotlib
+markdown-it-py
+Pillow
+resvg-py>=0.5,<1
+ziamath>=0.13,<1
